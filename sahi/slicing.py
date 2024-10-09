@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps, ExifTags
 from shapely.errors import TopologicalError
 from tqdm import tqdm
 
@@ -315,12 +315,17 @@ def slice_image(
     # define verboseprint
     verboselog = logger.info if verbose else lambda *a, **k: None
 
-    def _export_single_slice(image: np.ndarray, output_dir: str, slice_file_name: str):
-        image_pil = read_image_as_pil(image)
+    def _export_single_slice(image: np.ndarray, output_dir: str, slice_file_name: str, exif_data=None):
+        # Convert the numpy array back to a PIL Image
+        image_pil = Image.fromarray(image)
+
+        # Save the image with EXIF data (if any)
         slice_file_path = str(Path(output_dir) / slice_file_name)
-        # export sliced image
-        image_pil.save(slice_file_path)
-        image_pil.close()  # to fix https://github.com/obss/sahi/issues/565
+        if exif_data:
+            image_pil.save(slice_file_path, exif=exif_data)
+        else:
+            image_pil.save(slice_file_path)
+        image_pil.close()
         verboselog("sliced image path: " + slice_file_path)
 
     # create outdir if not present
@@ -329,7 +334,26 @@ def slice_image(
 
     # read image
     image_pil = read_image_as_pil(image)
+
+    # Apply EXIF rotation
+    image_pil = ImageOps.exif_transpose(image_pil)
     verboselog("image.shape: " + str(image_pil.size))
+
+    # Extract EXIF data (if any)
+    exif_data = image_pil.getexif()
+
+    # Remove the orientation tag to prevent incorrect rotation in saved slices
+    orientation_tag = None
+    for tag, value in exif_data.items():
+        tag_name = ExifTags.TAGS.get(tag, tag)
+        if tag_name == 'Orientation':
+            orientation_tag = tag
+            break
+    if orientation_tag is not None:
+        del exif_data[orientation_tag]
+    
+    # Convert EXIF data back to bytes
+    exif_bytes = exif_data.tobytes()
 
     image_width, image_height = image_pil.size
     if not (image_width != 0 and image_height != 0):
@@ -401,6 +425,7 @@ def slice_image(
             sliced_image_result.images,
             [output_dir] * len(sliced_image_result),
             sliced_image_result.filenames,
+            [exif_bytes] * len(sliced_image_result),  # Pass exif_bytes to each call
         )
 
     verboselog(
